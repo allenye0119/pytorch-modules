@@ -303,3 +303,15 @@ class Encoder(nn.Module):
             x = encoder_block(x, x_pad_mask)
 
         return x
+
+
+def onehot(x, n):
+    onehot = torch.zeros(*x.shape, n, device=x.device)
+    onehot = onehot.scatter(x.dim(), x.unsqueeze(-1), 1)
+
+    return onehot
+
+
+def log_sum_exp(x):
+    x_max, _ = x.max(dim=-1, keepdim=True)
+    return ((x - x_max).exp().sum(dim=-1) + 1e-10).log() + x_max.squeeze()
