@@ -222,42 +222,91 @@ class BatchNormResidual(nn.Module):
         self.dropout = nn.Dropout(p=dropout) if dropout else None
 
     def forward(self, x, *args, **kwargs):
-        y = self.sublayer(x, *args, **kwargs)
-
+        """
+        The operations are ordered according to https://arxiv.org/abs/1804.09849.
+        """
+        # Normalize
         if self.transpose:
-            y = y.transpose(1, 2).contiguous()
+            y = x.transpose(1, 2).contiguous()
+        else:
+            y = x
         y = self.batch_norm(y)
         if self.transpose:
             y = y.transpose(1, 2)
-        y += x
 
+        # Transform
+        y = self.sublayer(x, *args, **kwargs)
         if self.activation:
             y = self.activation(y)
+
+        # Dropout
         if self.dropout:
             y = self.dropout(y)
+
+        # Residual
+        y += x
 
         return y
 
 
-class EncoderBlock(nn.Module):
+class LayerNormResidual(nn.Module):
+    def __init__(self, sublayer, norm_shape, transpose=False, activation=None,
+                 dropout=0):
+        super(LayerNormResidual, self).__init__()
+
+        self.sublayer = sublayer
+        self.layer_norm = nn.LayerNorm(norm_shape)
+        self.transpose = transpose
+        self.activation = activation
+        self.dropout = nn.Dropout(p=dropout) if dropout else None
+
+    def forward(self, x, *args, **kwargs):
+        """
+        The operations are ordered according to https://arxiv.org/abs/1804.09849.
+        """
+        # Normalize
+        if self.transpose:
+            y = x.transpose(1, 2).contiguous()
+        else:
+            y = x
+        y = self.layer_norm(y)
+        if self.transpose:
+            y = y.transpose(1, 2)
+
+        # Transform
+        y = self.sublayer(x, *args, **kwargs)
+        if self.activation:
+            y = self.activation(y)
+
+        # Dropout
+        if self.dropout:
+            y = self.dropout(y)
+
+        # Residual
+        y += x
+
+        return y
+
+
+class TransformerEncoderBlock(nn.Module):
     def __init__(self, d_model, n_convs, kernel_size, n_heads,
                  max_pos_distance, dropout, pos_embedding_K, pos_embedding_V):
-        super(EncoderBlock, self).__init__()
+        super(TransformerEncoderBlock, self).__init__()
 
         self.convs = nn.ModuleList([
-            BatchNormResidual(
+            LayerNormResidual(
                 DepthwiseSeperableConv1d(d_model, d_model, kernel_size), d_model,
-                activation=Activation('ReLU'), dropout=dropout)
+                transpose=True, activation=Activation('ReLU'), dropout=dropout)
             for _ in range(n_convs)
         ])
-        self.attention = BatchNormResidual(
+        self.attention = LayerNormResidual(
             MultiHeadSelfAttention(
                 d_model, d_model, n_heads, max_pos_distance, dropout, pos_embedding_K,
                 pos_embedding_V),
-            d_model, transpose=True, dropout=dropout)
-        self.feedforward = BatchNormResidual(
+            d_model, dropout=dropout)
+        self.feedforward = LayerNormResidual(
             PointwiseFeedForward(d_model, d_model * 4, dropout), d_model,
-            transpose=True, activation=Activation('ReLU'), dropout=dropout)
+            activation=Activation('ReLU'), dropout=dropout)
 
     def forward(self, x, x_pad_mask):
         x = x.transpose(1, 2)
@@ -271,10 +320,10 @@ class EncoderBlock(nn.Module):
         return x
 
 
-class Encoder(nn.Module):
+class TransformerEncoder(nn.Module):
     def __init__(self, n_blocks, input_size, d_model, n_convs, kernel_size,
                  n_heads, max_pos_distance, dropout):
-        super(Encoder, self).__init__()
+        super(TransformerEncoder, self).__init__()
 
         self.conv = DepthwiseSeperableConv1d(input_size, d_model, kernel_size)
         self.batch_norm = nn.BatchNorm1d(d_model)
@@ -284,7 +333,7 @@ class Encoder(nn.Module):
         pos_embedding_K = nn.Embedding(2 * max_pos_distance + 1, d_model // n_heads)
         pos_embedding_V = nn.Embedding(2 * max_pos_distance + 1, d_model // n_heads)
         self.encoder_blocks = nn.ModuleList([
-            EncoderBlock(
+            TransformerEncoderBlock(
                 d_model, n_convs, kernel_size, n_heads, max_pos_distance, dropout,
                 pos_embedding_K, pos_embedding_V
             )
@@ -310,8 +359,3 @@ def onehot(x, n):
     onehot = onehot.scatter(x.dim(), x.unsqueeze(-1), 1)
 
     return onehot
-
-
-def log_sum_exp(x):
-    x_max, _ = x.max(dim=-1, keepdim=True)
-    return ((x - x_max).exp().sum(dim=-1) + 1e-10).log() + x_max.squeeze()
