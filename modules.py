@@ -354,8 +354,18 @@ class TransformerEncoder(nn.Module):
         return x
 
 
-def onehot(x, n):
-    onehot = torch.zeros(*x.shape, n, device=x.device)
-    onehot = onehot.scatter(x.dim(), x.unsqueeze(-1), 1)
+class Swish(nn.Module):
+    def __init__(self):
+        super(Swish, self).__init__()
 
-    return onehot
+    def forward(self, x):
+        return x * torch.sigmoid(x)
+
+
+class PenalizedTanh(nn.Module):
+    def __init__(self, negative_slope=0.25):
+        self.negative_slope = negative_slope
+
+    def forward(self, x):
+        a = torch.tanh(x)
+        return torch.where(x > 0, a, self.negative_slope * a)
